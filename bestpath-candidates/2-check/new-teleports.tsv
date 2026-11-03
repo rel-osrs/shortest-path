@@ -1,0 +1,2 @@
+Group	Confidence	Value	Reason	Destination	menuOption menuTarget objectID	Skills	Items	Quests	Duration	Display info	Wilderness level	Varbits	VarPlayers	Needs (not in the TSV format)	Source	From
+T002	medium	opens a new area (909 tiles)	no row with this teleport/item in the plugin	2581 8633 0	Teleport Slayer ring (eternal)		21268=1	Fallen From Grace		Slayer ring (eternal): Wyrmscraig Cavern	30				none recorded	3b new transports - Wiki or cache source - teleports (line 8)
