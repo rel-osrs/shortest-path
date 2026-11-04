@@ -207,6 +207,18 @@ public class SailingMovesTest
 	}
 
 	@Test
+	public void testALandTargetIsProvenUnreachableWithoutFloodingTheSea()
+	{
+		// Lumbridge is walkable land no sea touches: walking back from it runs out long before the sea would
+		SailingPathfinder pathfinder = new SailingPathfinder(pathfinderConfig, OPEN_SEA_START,
+			Set.of(WorldPointUtil.packWorldPoint(3222, 3218, 0)), null, SailingMoves.ESTIMATE);
+		pathfinder.run();
+
+		assertFalse(pathfinder.getResult().isReached());
+		assertTrue(pathfinder.getResult().getNodesChecked() < 1_000_000);
+	}
+
+	@Test
 	public void testLinesDontCrossBlockedTiles()
 	{
 		// A 3x2 shipwreck at (2704-2706, 3050-3051) in open sea

@@ -155,6 +155,8 @@ public class BoatHullTest
 		pathfinder.run();
 
 		assertFalse(pathfinder.getResult().isReached());
+		// Proven by sailing back from the target (SailingReach), rather than by flooding millions of tiles of sea
+		assertTrue(pathfinder.getResult().getNodesChecked() < 1_000_000);
 	}
 
 	@Test

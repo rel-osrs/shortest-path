@@ -1,6 +1,5 @@
 package shortestpath.pathfinder.sailing;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
@@ -29,18 +28,16 @@ import shortestpath.pathfinder.WildernessChecker;
 /**
  * The sailing search: a Dijkstra over the boat's 16 headings (see {@link SailingMoves}) that keeps the
  * boat's whole hull clear along every move and arrives once the hull covers a target, rather than on
- * a tile. Once found, the route is straightened into fewer, longer legs ({@link SailingCourse}) before
- * it is drawn. A self-contained search sharing only the public machinery of {@code pathfinder} (NodeGraph,
+ * a tile. A self-contained search sharing only the public machinery of {@code pathfinder} (NodeGraph,
  * VisitedTiles, TargetGoals, SplitFlagMap) — it is an {@link ActiveSearch}, not a {@code Pathfinder},
  * so a walking search and a sailing search never share a class.
  */
 public class SailingPathfinder implements ActiveSearch
 {
-	/**
-	 * What straightening the final route ({@link SailingCourse}) charges for each 22.5 degrees the boat turns, in ticks
-	 * of sailing at the boat's speed: a route may sail this much further per step of turning it saves.
-	 */
-	static final double TURN_PENALTY_TICKS = 0.5;
+	/** Queued tiles before the search starts proving the target unreachable ({@link SailingReach}). */
+	static final int REACH_CHECK_NODES = 1 << 17;
+	/** Once it's proven unreachable, the search stops after this many tiles without getting closer. */
+	static final int STALL_NODES = 1 << 15;
 
 	private final Stats stats;
 	@Getter
@@ -50,10 +47,10 @@ public class SailingPathfinder implements ActiveSearch
 	@Getter
 	private final Targets targets;
 	// Termination set resolved by TargetGoals: the requested targets plus, for
-	// each blocked target, its fallback tiles (issue #640). A sorted array, as the
-	// search tests every tile it reaches against it.
+	// each blocked target, its fallback tiles (issue #640).
+	private final Set<Integer> goals;
+	// The goals and targets, sorted: the search tests every tile it reaches against them
 	private final int[] goalTiles;
-	// The targets' tiles, sorted
 	private final int[] targetTiles;
 	// Whether any requested target could possibly terminate the search: non-blocked,
 	// a transport destination, or resolved to at least one walkable nearby tile.
@@ -90,6 +87,10 @@ public class SailingPathfinder implements ActiveSearch
 	private volatile int closestReachedPoint = WorldPointUtil.UNDEFINED;
 	private volatile int finalPathCost = PathfinderResult.NO_PATH_COST;
 	private int bestRemainingDistance = Integer.MAX_VALUE;
+	// Proves the target unreachable, once the search has run long enough to be worth it
+	private SailingReach reach;
+	private boolean hopeless;
+	private int stalled;
 	private int bestTravelledDistance = Integer.MAX_VALUE;
 	private int bestX = Integer.MAX_VALUE;
 	private int bestY = Integer.MAX_VALUE;
@@ -147,10 +148,10 @@ public class SailingPathfinder implements ActiveSearch
 		this.targets = targets;
 		Set<Integer> points = targets.points();
 		TargetGoals resolved = TargetGoals.resolve(config, start, points);
-		Set<Integer> goals = resolved.goals();
+		this.goals = resolved.goals();
 		this.hasViableGoal = resolved.hasViableGoal();
-		this.goalTiles = goals.stream().mapToInt(Integer::intValue).sorted().toArray();
-		this.targetTiles = points.stream().mapToInt(Integer::intValue).sorted().toArray();
+		goalTiles = goals.stream().mapToInt(Integer::intValue).sorted().toArray();
+		targetTiles = points.stream().mapToInt(Integer::intValue).sorted().toArray();
 		this.sailing = new SailingSearch(moves, boatHull, points.stream().mapToInt(Integer::intValue).toArray(),
 			goals.stream().mapToInt(Integer::intValue).toArray(), sailingHeading);
 		this.completionCallback = completionCallback;
@@ -275,7 +276,24 @@ public class SailingPathfinder implements ActiveSearch
 		{
 			int neighbor = neighbors.get(i);
 			final int neighborPacked = graph.packedPosition(neighbor);
-			if (!moveAllowed(nodePacked, neighborPacked))
+			if (config.avoidWilderness(nodePacked, neighborPacked, targetInWilderness))
+			{
+				continue;
+			}
+			if (config.avoidBlockedRegion(nodePacked, neighborPacked, targetInBlockedRegion))
+			{
+				continue;
+			}
+			// Every emitted node is a weighted tile: a sailing move crosses its whole span at once, so
+			// check its midpoint too, so a leg can't clip a wilderness or league boundary inside its reach
+			final int midPacked = WorldPointUtil.packWorldPoint(
+				(WorldPointUtil.unpackWorldX(nodePacked) + WorldPointUtil.unpackWorldX(neighborPacked)) / 2,
+				(WorldPointUtil.unpackWorldY(nodePacked) + WorldPointUtil.unpackWorldY(neighborPacked)) / 2,
+				WorldPointUtil.unpackWorldPlane(nodePacked));
+			if (config.avoidWilderness(nodePacked, midPacked, targetInWilderness)
+				|| config.avoidWilderness(midPacked, neighborPacked, targetInWilderness)
+				|| config.avoidBlockedRegion(nodePacked, midPacked, targetInBlockedRegion)
+				|| config.avoidBlockedRegion(midPacked, neighborPacked, targetInBlockedRegion))
 			{
 				continue;
 			}
@@ -287,102 +305,6 @@ public class SailingPathfinder implements ActiveSearch
 				WorldPointUtil.unpackWorldPlane(neighborPacked), graph.bankVisited(neighbor), graph.cost(neighbor));
 			++stats.nodesChecked;
 		}
-	}
-
-	private boolean isGoal(int packed)
-	{
-		return Arrays.binarySearch(goalTiles, packed) >= 0;
-	}
-
-	/**
-	 * Whether the route settings let a sailing move go from the tile at {@code fromPacked} to the one at
-	 * {@code toPacked}: into the wilderness or a blocked league region only when the target is there.
-	 */
-	private boolean moveAllowed(int fromPacked, int toPacked)
-	{
-		if (config.avoidWilderness(fromPacked, toPacked, targetInWilderness)
-			|| config.avoidBlockedRegion(fromPacked, toPacked, targetInBlockedRegion))
-		{
-			return false;
-		}
-		// A sailing move crosses its whole span at once, so check its midpoint too, so a leg can't clip a
-		// wilderness or league boundary inside its reach
-		final int midPacked = WorldPointUtil.packWorldPoint(
-			(WorldPointUtil.unpackWorldX(fromPacked) + WorldPointUtil.unpackWorldX(toPacked)) / 2,
-			(WorldPointUtil.unpackWorldY(fromPacked) + WorldPointUtil.unpackWorldY(toPacked)) / 2,
-			WorldPointUtil.unpackWorldPlane(fromPacked));
-		return !config.avoidWilderness(fromPacked, midPacked, targetInWilderness)
-			&& !config.avoidWilderness(midPacked, toPacked, targetInWilderness)
-			&& !config.avoidBlockedRegion(fromPacked, midPacked, targetInBlockedRegion)
-			&& !config.avoidBlockedRegion(midPacked, toPacked, targetInBlockedRegion);
-	}
-
-	/**
-	 * The route to {@code lastNode} straightened into fewer, longer legs ({@link SailingCourse}), as path steps; its
-	 * cost, in the search's units, goes in {@code cost[0]}. Must run before the node graph is released.
-	 */
-	private List<PathStep> straightenedPath(int lastNode, int[] cost)
-	{
-		// The route's moves, start first
-		int length = 0;
-		for (int node = lastNode; node != NodeGraph.NO_NODE && graph.moveIndex(node) >= 0; node = graph.previous(node))
-		{
-			length++;
-		}
-		int[] route = new int[length];
-		int node = lastNode;
-		for (int k = length - 1; k >= 0; k--)
-		{
-			route[k] = graph.moveIndex(node);
-			node = graph.previous(node);
-		}
-		// node is now the first tile no sailing move reached: the start
-		if (node == NodeGraph.NO_NODE || length == 0)
-		{
-			cost[0] = graph.cost(lastNode);
-			return graph.getPathSteps(lastNode);
-		}
-		final int first = node;
-		final int startPacked = graph.packedPosition(first);
-		final int endPacked = graph.packedPosition(lastNode);
-		final BankVisitState bank = graph.bankVisited(lastNode);
-		final SailingMoves moves = sailing.moves;
-		// A route that ended by facing a target must still face one; one that landed on a goal, or never arrived,
-		// can end facing any way
-		final boolean facingMatters = reachedTarget != WorldPointUtil.UNDEFINED && !isGoal(endPacked);
-		final int turnPenalty = (int) Math.round(TURN_PENALTY_TICKS * moves.speed() * SailingMoves.LENGTH_UNITS_PER_TILE);
-		int[] straight = SailingCourse.straighten(moves, startPacked, route, sailing.initialHeading(), turnPenalty,
-			(from, move, firstMove) ->
-			{
-				final int x = WorldPointUtil.unpackWorldX(from);
-				final int y = WorldPointUtil.unpackWorldY(from);
-				final int z = WorldPointUtil.unpackWorldPlane(from);
-				return sailing.canSail(map, x, y, z, move, firstMove)
-					&& moveAllowed(from, WorldPointUtil.packWorldPoint(x + moves.dx(move), y + moves.dy(move), z));
-			},
-			facingMatters ? (packed, heading) -> sailing.arrivedTarget(packed, heading) != WorldPointUtil.UNDEFINED : null);
-
-		List<PathStep> steps = new ArrayList<>(straight.length + 1);
-		int at = startPacked;
-		int heading = sailing.initialHeading();
-		int total = graph.cost(first);
-		steps.add(new PathStep(at, graph.bankVisited(first)));
-		for (int move : straight)
-		{
-			total += moves.length(move) + sailing.turnCost(heading, move);
-			heading = moves.heading(move);
-			at = WorldPointUtil.packWorldPoint(WorldPointUtil.unpackWorldX(at) + moves.dx(move),
-				WorldPointUtil.unpackWorldY(at) + moves.dy(move), WorldPointUtil.unpackWorldPlane(at));
-			steps.add(new PathStep(at, bank));
-		}
-		if (at != endPacked)
-		{
-			// Can't happen: every way of sailing a stretch ends on its last tile. Keep the search's route if it does
-			cost[0] = graph.cost(lastNode);
-			return graph.getPathSteps(lastNode);
-		}
-		cost[0] = total;
-		return steps;
 	}
 
 	/**
@@ -523,7 +445,7 @@ public class SailingPathfinder implements ActiveSearch
 			updateWildernessLevel(nodePacked);
 
 			final int arrivedTarget = sailing.arrivedTarget(nodePacked, sailing.arrivalHeading(graph, node));
-			final boolean onGoal = isGoal(nodePacked);
+			final boolean onGoal = Arrays.binarySearch(goalTiles, nodePacked) >= 0;
 			if (onGoal || arrivedTarget != WorldPointUtil.UNDEFINED)
 			{
 				bestLastNode = node;
@@ -540,6 +462,17 @@ public class SailingPathfinder implements ActiveSearch
 			if (updateBestPathWhenUnreachable(node, nodePacked))
 			{
 				deadline.progressed();
+				stalled = 0;
+			}
+			if (reach == null && stats.nodesChecked > REACH_CHECK_NODES)
+			{
+				reach = new SailingReach(map, sailing, start, sailing.arrivals(map), t -> visited.get(t, BankVisitState.CARRIED));
+			}
+			hopeless = hopeless || reach != null && reach.step();
+			if (hopeless && ++stalled > STALL_NODES)
+			{
+				terminationReason = PathTerminationReason.SEARCH_EXHAUSTED;
+				break;
 			}
 
 			if (deadline.expired())
@@ -566,10 +499,9 @@ public class SailingPathfinder implements ActiveSearch
 		int lastNode = bestLastNode;
 		if (lastNode != NodeGraph.NO_NODE)
 		{
-			int[] cost = new int[1];
-			finalPath = cancelled ? graph.getPathSteps(lastNode) : straightenedPath(lastNode, cost);
+			finalPath = graph.getPathSteps(lastNode);
 			closestReachedPoint = graph.getClosestTilePosition(lastNode);
-			finalPathCost = cancelled ? graph.cost(lastNode) : cost[0];
+			finalPathCost = graph.cost(lastNode);
 		}
 		else
 		{

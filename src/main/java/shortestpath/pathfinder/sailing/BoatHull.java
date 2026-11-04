@@ -52,9 +52,8 @@ public final class BoatHull
 	// Concurrent: the search fills it on the pathfinding thread while the client thread's arrival
 	// check reads and fills it too (ShortestPathPlugin asks covers() each tick for the live boat)
 	private final Map<Long, int[]> shapes = new ConcurrentHashMap<>();
-	// The last shape asked for per heading, standing still and sailing, in front of the map (see shape())
-	private final Slot[] standing = new Slot[HEADINGS];
-	private final Slot[] sailing = new Slot[HEADINGS];
+	// Each heading's last standing and sailing shape, so a search's moves skip the map (see shape())
+	private final Slot[][] slots = new Slot[2][HEADINGS];
 	// How far the hull reaches from the centre of the boat's tile, facing any heading, in tiles
 	@Getter @Accessors(fluent = true) private final double reach;
 	// Tiles that block a boat, as one bit per tile and one long per row of each region and plane, filled in as the
@@ -179,20 +178,9 @@ public final class BoatHull
 	void release()
 	{
 		shapes.clear();
-		Arrays.fill(standing, null);
-		Arrays.fill(sailing, null);
+		Arrays.fill(slots[0], null);
+		Arrays.fill(slots[1], null);
 		Arrays.fill(blockedRows, null);
-	}
-
-	// Index of a region and plane in blockedRows, or -1 off the map
-	private int regionIndex(int regionX, int regionY, int z)
-	{
-		if (regionX < extent.getMinX() || regionX > extent.getMaxX() || regionY < extent.getMinY()
-			|| regionY > extent.getMaxY() || z < 0 || z >= PLANES)
-		{
-			return -1;
-		}
-		return ((regionX - extent.getMinX()) + (regionY - extent.getMinY()) * (extent.getWidth() + 1)) * PLANES + z;
 	}
 
 	private static int rows(int[] shape)
@@ -225,40 +213,35 @@ public final class BoatHull
 	// The tiles of a region and plane that block a boat, one long per row, or null off the map
 	private long[] regionRows(CollisionMap map, int regionX, int regionY, int z)
 	{
-		final int index = regionIndex(regionX, regionY, z);
-		if (index < 0)
+		if (regionX < extent.getMinX() || regionX > extent.getMaxX() || regionY < extent.getMinY()
+			|| regionY > extent.getMaxY() || z < 0 || z >= PLANES)
 		{
 			return null;
 		}
+		int index = ((regionX - extent.getMinX()) + (regionY - extent.getMinY()) * (extent.getWidth() + 1)) * PLANES + z;
 		long[] rows = blockedRows[index];
 		if (rows == null)
 		{
 			rows = new long[REGION_SIZE];
 			final int baseX = regionX << REGION_SHIFT;
 			final int baseY = regionY << REGION_SHIFT;
-			// The map's north and east flags of the region and a border two tiles wide around it, read once each: a
-			// tile's south side is the north side of the tile below, and its west side the east side of the tile left
-			final int flagSize = REGION_SIZE + 4;
-			final boolean[] north = new boolean[flagSize * flagSize];
-			final boolean[] east = new boolean[flagSize * flagSize];
-			for (int row = 0; row < flagSize; row++)
+			// The north and east flags of the region and two tiles round it, read once: a tile's south and west sides
+			// are the north and east sides of the tiles below and left of it
+			final int f = REGION_SIZE + 4;
+			final boolean[] north = new boolean[f * f];
+			final boolean[] east = new boolean[f * f];
+			for (int i = 0; i < f * f; i++)
 			{
-				for (int column = 0; column < flagSize; column++)
-				{
-					north[row * flagSize + column] = map.n(baseX + column - 2, baseY + row - 2, z);
-					east[row * flagSize + column] = map.e(baseX + column - 2, baseY + row - 2, z);
-				}
+				north[i] = map.n(baseX + i % f - 2, baseY + i / f - 2, z);
+				east[i] = map.e(baseX + i % f - 2, baseY + i / f - 2, z);
 			}
 			// Which tiles are blocked (no side open), including a border one tile wide around the region
 			final int size = REGION_SIZE + 2;
 			boolean[] blocked = new boolean[size * size];
-			for (int row = 0; row < size; row++)
+			for (int i = 0; i < size * size; i++)
 			{
-				for (int column = 0; column < size; column++)
-				{
-					final int f = (row + 1) * flagSize + column + 1;
-					blocked[row * size + column] = !north[f] && !north[f - flagSize] && !east[f] && !east[f - 1];
-				}
+				final int j = (i / size + 1) * f + i % size + 1;
+				blocked[i] = !north[j] && !north[j - f] && !east[j] && !east[j - 1];
 			}
 			for (int row = 0; row < REGION_SIZE; row++)
 			{
@@ -266,10 +249,10 @@ public final class BoatHull
 				for (int column = 0; column < REGION_SIZE; column++)
 				{
 					final int i = (row + 1) * size + column + 1;
-					final int f = (row + 2) * flagSize + column + 2;
+					final int j = (row + 2) * f + column + 2;
 					// A side that can't be crossed into an open tile has a wall on it
-					boolean wall = (!north[f] && !blocked[i + size]) || (!north[f - flagSize] && !blocked[i - size])
-						|| (!east[f] && !blocked[i + 1]) || (!east[f - 1] && !blocked[i - 1]);
+					boolean wall = (!north[j] && !blocked[i + size]) || (!north[j - f] && !blocked[i - size])
+						|| (!east[j] && !blocked[i + 1]) || (!east[j - 1] && !blocked[i - 1]);
 					if (blocked[i] || wall)
 					{
 						bits |= 1L << column;
@@ -285,11 +268,10 @@ public final class BoatHull
 	// The tiles the hull overlaps while sailing (dx, dy) tiles facing heading, relative to the tile it starts on
 	private int[] shape(int heading, int dx, int dy)
 	{
-		// A search sails one move per heading, and the arrival check asks for the hull standing still, so nearly every
-		// call is answered by the heading's slot without boxing a key into the map. Each slot is an immutable holder,
-		// so a racing write from the client thread's arrival check only costs a lookup, never a wrong shape
-		final Slot[] slots = dx == 0 && dy == 0 ? standing : sailing;
-		final Slot slot = slots[heading];
+		// A search sails one move per heading and checks arrival standing still, so a slot answers nearly every call
+		// without boxing a key. Slots are immutable, so a racing write from the client thread only costs a lookup
+		final Slot[] cached = slots[dx == 0 && dy == 0 ? 0 : 1];
+		final Slot slot = cached[heading];
 		if (slot != null && slot.dx == dx && slot.dy == dy)
 		{
 			return slot.shape;
@@ -301,11 +283,10 @@ public final class BoatHull
 			shape = rasterize(corners(heading * ANGLES_PER_HEADING, dx, dy));
 			shapes.put(key, shape);
 		}
-		slots[heading] = new Slot(dx, dy, shape);
+		cached[heading] = new Slot(dx, dy, shape);
 		return shape;
 	}
 
-	// The last shape worked out for one heading, by how far the hull sails
 	private static final class Slot
 	{
 		final int dx;
