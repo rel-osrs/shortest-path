@@ -95,7 +95,7 @@ public final class SailingMoves
 			dx[count] = k * quarterX / 4;
 			dy[count] = k * quarterY / 4;
 			ticks[count] = k;
-			// Rounded up, so a route never costs less than its real length and the search's estimate stays a lower bound
+			// Rounded up, so a route never costs less than its real length
 			lengths[count] = (int) Math.ceil(Math.hypot(dx[count], dy[count]) * LENGTH_UNITS_PER_TILE);
 			headings[count] = heading;
 			names[count] = HEADING_NAMES[heading];
