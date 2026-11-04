@@ -32,6 +32,8 @@ final class SailingSearch
 	// Sailing moves cost the distance they sail (SailingMoves.length), plus a thousandth of a tile per change of
 	// heading, so that of the routes that are equally short the one with the fewest, longest legs wins.
 	private static final int SAILING_COST_PER_TURN = 1;
+	/** Up to this many goals the estimate measures to each; beyond it, to the box round them. */
+	private static final int GOALS_BEFORE_BOX = 8;
 
 	final SailingMoves moves;
 	/** The boat's hull, or {@code null} to keep only the boat's centre clear. */
@@ -39,6 +41,9 @@ final class SailingSearch
 	private final int[] targets;
 	// The targets plus their fallback tiles: the search can also end by landing on one of them
 	private final int[] goals;
+	// With more than a few goals, the box round them {min x, min y, max x, max y} stands in for them in the estimate,
+	// which is worked out for every tile the search queues; null otherwise
+	private final int[] goalBox;
 	// The heading the boat is facing where the route starts, or -1 when that isn't known: the start node has no
 	// move to face, so without it a target under the hull counts as arrived facing any heading — even one the
 	// boat, berthed, isn't pointing
@@ -46,6 +51,9 @@ final class SailingSearch
 	// How far from a target the boat's tile can be while arriving, in tiles: next to it diagonally, or with a hull, as
 	// far as the hull reaches plus half a tile's diagonal
 	private final double arrivalReach;
+	// The furthest a tile the hull covers can be from the boat's tile along either axis: the hull reaches at most
+	// hull.reach() from the tile's centre, and a tile it overlaps is within half a tile beyond that, rounded up
+	private final int coverReach;
 	private final SplitFlagMap.RegionExtent extent;
 	// The cheapest cost each tile has been queued at, without and with a bank visited, as one array per region and plane,
 	// made as the search reaches them
@@ -66,8 +74,25 @@ final class SailingSearch
 		this.hull = hull;
 		this.targets = targets;
 		this.goals = goals;
+		if (goals.length > GOALS_BEFORE_BOX)
+		{
+			int[] box = {Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MIN_VALUE, Integer.MIN_VALUE};
+			for (int goal : goals)
+			{
+				box[0] = Math.min(box[0], WorldPointUtil.unpackWorldX(goal));
+				box[1] = Math.min(box[1], WorldPointUtil.unpackWorldY(goal));
+				box[2] = Math.max(box[2], WorldPointUtil.unpackWorldX(goal));
+				box[3] = Math.max(box[3], WorldPointUtil.unpackWorldY(goal));
+			}
+			goalBox = box;
+		}
+		else
+		{
+			goalBox = null;
+		}
 		this.initialHeading = initialHeading;
 		arrivalReach = hull == null ? Math.sqrt(2) : hull.reach() + Math.sqrt(2) / 2;
+		coverReach = hull == null ? 0 : (int) Math.ceil(hull.reach() + 0.5) + 1;
 		extent = SplitFlagMap.getRegionExtents();
 		int regions = (extent.getWidth() + 1) * (extent.getHeight() + 1) * PLANES;
 		queuedCosts[0] = new int[regions][];
@@ -120,6 +145,11 @@ final class SailingSearch
 			}
 			int dx = WorldPointUtil.unpackWorldX(target) - WorldPointUtil.unpackWorldX(packedPosition);
 			int dy = WorldPointUtil.unpackWorldY(target) - WorldPointUtil.unpackWorldY(packedPosition);
+			// Every tile on the way is tested, so most are far from every target: skip those before the hull's shape
+			if (Math.max(Math.abs(dx), Math.abs(dy)) > coverReach)
+			{
+				continue;
+			}
 			for (int facing = heading < 0 ? 0 : heading; facing < (heading < 0 ? HEADINGS : heading + 1); facing++)
 			{
 				if (hull.covers(facing, dx, dy))
@@ -141,11 +171,23 @@ final class SailingSearch
 		// Landing on a goal tile ends the search exactly; a target only needs the boat within
 		// arrival reach of it
 		double tilesLeft = Double.MAX_VALUE;
-		for (int goal : goals)
+		if (goalBox != null)
 		{
-			long dx = WorldPointUtil.unpackWorldX(goal) - x;
-			long dy = WorldPointUtil.unpackWorldY(goal) - y;
-			tilesLeft = Math.min(tilesLeft, Math.sqrt(dx * dx + dy * dy));
+			// Many goals (a blocked target's fallback tiles): the box round them is never further than the nearest
+			long dx = Math.max(0, Math.max(goalBox[0] - x, x - goalBox[2]));
+			long dy = Math.max(0, Math.max(goalBox[1] - y, y - goalBox[3]));
+			tilesLeft = Math.sqrt(dx * dx + dy * dy);
+		}
+		else if (goals.length > 0)
+		{
+			long nearest = Long.MAX_VALUE;
+			for (int goal : goals)
+			{
+				long dx = WorldPointUtil.unpackWorldX(goal) - x;
+				long dy = WorldPointUtil.unpackWorldY(goal) - y;
+				nearest = Math.min(nearest, dx * dx + dy * dy);
+			}
+			tilesLeft = Math.sqrt(nearest);
 		}
 		for (int target : targets)
 		{
@@ -264,17 +306,52 @@ final class SailingSearch
 			final int dx = moves.dx(i);
 			final int dy = moves.dy(i);
 			final int neighborPacked = WorldPointUtil.packWorldPoint(x + dx, y + dy, z);
-			final int cost = moves.length(i) + (arrivalHeading >= 0 && arrivalHeading != moves.heading(i) ? SAILING_COST_PER_TURN : 0);
-			if (visited.get(neighborPacked, bankVisited)
-				|| (costSoFar + cost >= queuedCost(x + dx, y + dy, z, bankVisited)
+			if (visited.get(neighborPacked, bankVisited))
+			{
+				continue;
+			}
+			final int cost = moves.length(i) + turnCost(arrivalHeading, i);
+			if ((costSoFar + cost >= queuedCost(x + dx, y + dy, z, bankVisited)
 					&& !queueArrival(neighborPacked, i, x + dx, y + dy, z, bankVisited))
-				|| !(hull == null ? canSailLine(map, x, y, z, dx, dy)
-					: hull.canMove(map, x, y, z, moves.heading(i), dx, dy, firstMove)))
+				|| !canSail(map, x, y, z, i, firstMove))
 			{
 				continue;
 			}
 			out.add(graph.createWeightedTile(neighborPacked, node, cost, estimate(x + dx, y + dy), bankVisited, i));
 		}
+	}
+
+	/**
+	 * What turning to sail {@code move} costs when the boat is facing {@code heading} (-1 when unknown):
+	 * {@link #SAILING_COST_PER_TURN} if it turns at all.
+	 */
+	int turnCost(int heading, int move)
+	{
+		return heading >= 0 && heading != moves.heading(move) ? SAILING_COST_PER_TURN : 0;
+	}
+
+	/**
+	 * Whether the boat can make {@code move} from tile (x, y, z): its whole hull stays clear along it, or without a hull
+	 * the line between the tile centres crosses only open tiles. {@code firstMove} marks the route's first move, which
+	 * may leave tiles a berthed hull already sits over (see {@link BoatHull#canMove}).
+	 * <p>
+	 * This is the only collision rule the search uses, so a route rebuilt from it (see {@link SailingCourse}) is one
+	 * the search could have found.
+	 */
+	boolean canSail(CollisionMap map, int x, int y, int z, int move, boolean firstMove)
+	{
+		final int dx = moves.dx(move);
+		final int dy = moves.dy(move);
+		return hull == null ? canSailLine(map, x, y, z, dx, dy)
+			: hull.canMove(map, x, y, z, moves.heading(move), dx, dy, firstMove);
+	}
+
+	/**
+	 * The heading the boat faces where the route starts, or -1 when that isn't known.
+	 */
+	int initialHeading()
+	{
+		return initialHeading;
 	}
 
 	/**
