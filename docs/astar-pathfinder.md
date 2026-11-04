@@ -77,7 +77,9 @@ state the model can reach.
   the berth itself, a blocked dock tile, is never a boat state.
 - **Sail** one move (`SailingMoves`): from a possible state to another, with
   the hull's sweep along the move clear, for the move's ticks. Turning is
-  free: the boat may take any heading before a move.
+  free: the boat may take any heading before a move. Of two routes that take
+  equally many ticks, though, the search keeps the one that turns less
+  (`SailingSearch`), so a leg doesn't zigzag.
 - **Dock** from any possible state within docking range of a mooring the boat
   fits and the player meets the requirements of: the player is on the
   mooring's land tile, for the docking ticks.

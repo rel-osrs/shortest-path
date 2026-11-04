@@ -23,11 +23,17 @@ import shortestpath.pathfinder.SplitFlagMap;
  * It also remembers the cheapest cost each tile has been queued at, so that a tile is only queued again when a route
  * reaches it for less — or when a costlier move would arrive on a heading none has tried: a dearer one would only be
  * dequeued once the tile is done.
+ * <p>
+ * Costs are counted in {@link #UNITS_PER_TICK}ths of a tick, and a change of heading costs one unit. Turning stays
+ * free in ticks, but of two routes that take equally many ticks the search keeps the one that turns less, so a leg
+ * doesn't zigzag between equally quick headings. {@link SailingSolver} turns costs back into ticks.
  */
 final class SailingSearch
 {
 	/** An estimate meaning no end of the search can be reached from the tile: the move there isn't queued. */
 	static final int NO_ROUTE = Integer.MAX_VALUE;
+	/** Cost units per tick. A leg would need this many turns before they outweighed a tick. */
+	static final int UNITS_PER_TICK = 1024;
 
 	private static final int REGION_SHIFT = Integer.numberOfTrailingZeros(REGION_SIZE);
 	private static final int REGION_MASK = REGION_SIZE - 1;
@@ -175,10 +181,11 @@ final class SailingSearch
 		return false;
 	}
 
-	/** The estimate for {@code tile}: a lower bound on the ticks left, or {@link #NO_ROUTE}. */
+	/** The estimate for {@code tile}: a lower bound on the ticks left, in cost units, or {@link #NO_ROUTE}. */
 	int estimate(int tile)
 	{
-		return estimate.applyAsInt(tile);
+		int ticks = estimate.applyAsInt(tile);
+		return ticks == NO_ROUTE ? NO_ROUTE : ticks * UNITS_PER_TICK;
 	}
 
 	/**
@@ -254,20 +261,21 @@ final class SailingSearch
 	}
 
 	/**
-	 * Adds the moves from {@code node} on tile (x, y, z) to {@code out}, each costing its ticks. Sailing moves are
-	 * different lengths, so they are queued by cost. A tile is only queued again if a route reaches it for less, since
-	 * a dearer one would only be dequeued once the tile is done — or if a dearer move would arrive on a heading none
-	 * has tried, since the cheapest route's facing may not cover a target. The cost check comes first, as it costs less
-	 * than the hull's. The whole hull must fit along the move.
+	 * Adds the moves from {@code node} on tile (x, y, z) to {@code out}, each costing its ticks, and a unit more if it
+	 * turns. Sailing moves are different lengths, so they are queued by cost. A tile is only queued again if a route
+	 * reaches it for less, since a dearer one would only be dequeued once the tile is done — or if a dearer move would
+	 * arrive on a heading none has tried, since the cheapest route's facing may not cover a target. The cost check
+	 * comes first, as it costs less than the hull's. The whole hull must fit along the move.
 	 */
 	void addNeighbors(CollisionMap map, PrimitiveIntList out, int node, int x, int y, int z, NodeGraph graph)
 	{
 		int costSoFar = graph.cost(node);
 		int from = WorldPointUtil.packWorldPoint(x, y, z);
+		int heading = arrivalHeading(graph, node);
 		for (int i = 0; i < moves.size(); i++)
 		{
 			int dx = moves.dx(i), dy = moves.dy(i);
-			int cost = moves.ticks(i);
+			int cost = moves.ticks(i) * UNITS_PER_TICK + (heading >= 0 && moves.heading(i) != heading ? 1 : 0);
 			// Whether the hull passes over a target on this move: the search has then arrived, wherever it ends
 			boolean arrives = arrivingMoves != null && arrivedByMove(from, i) != WorldPointUtil.UNDEFINED;
 			// A tile queued for no more already has its route; settled tiles are among them

@@ -22,6 +22,9 @@ import shortestpath.pathfinder.NodeGraph;
  * Every state is a boat tile; the boat's heading on it is the move that reached it. A tile is settled once, except
  * that a costlier move arriving on a heading whose hull covers a target is still taken.
  * <p>
+ * Costs in and out are ticks. Inside, the search counts finer units, so that turns can break ties between equally quick
+ * routes ({@link SailingSearch#UNITS_PER_TICK}).
+ * <p>
  * One solver is one search: it holds the search's node graph until {@link #release}.
  */
 public final class SailingSolver
@@ -131,10 +134,11 @@ public final class SailingSolver
 		if (released) return NodeGraph.NO_NODE;
 		int estimate = sailing.estimate(tile);
 		if (estimate == NO_ROUTE) return NodeGraph.NO_NODE;
-		int node = graph.createWeightedTile(tile, NodeGraph.NO_NODE, cost, estimate, BankVisitState.CARRIED, -1);
+		int units = cost * SailingSearch.UNITS_PER_TICK;
+		int node = graph.createWeightedTile(tile, NodeGraph.NO_NODE, units, estimate, BankVisitState.CARRIED, -1);
 		pending.add(node);
 		int x = WorldPointUtil.unpackWorldX(tile), y = WorldPointUtil.unpackWorldY(tile), z = WorldPointUtil.unpackWorldPlane(tile);
-		sailing.setQueuedCost(x, y, z, cost);
+		sailing.setQueuedCost(x, y, z, units);
 		return node;
 	}
 
@@ -155,7 +159,7 @@ public final class SailingSolver
 	{
 		if (released) return EXHAUSTED;
 		int head = pending.peek();
-		return head == NodeGraph.NO_NODE ? EXHAUSTED : graph.compareCost(head);
+		return head == NodeGraph.NO_NODE ? EXHAUSTED : graph.compareCost(head) / SailingSearch.UNITS_PER_TICK;
 	}
 
 	/**
@@ -191,7 +195,7 @@ public final class SailingSolver
 			int previous = graph.previous(node);
 			if (query.estimate() != null && previous != NodeGraph.NO_NODE)
 			{
-				int estimate = query.estimate().applyAsInt(packed);
+				int estimate = sailing.estimate(packed);
 				if (estimate == NO_ROUTE) continue;
 				if (estimate > graph.differentialCost(node))
 				{
@@ -295,7 +299,7 @@ public final class SailingSolver
 			points[i] = graph.packedPosition(at);
 			int move = graph.moveIndex(at);
 			headings[i] = move < 0 ? -1 : query.moves().heading(move);
-			costs[i] = graph.cost(at);
+			costs[i] = graph.cost(at) / SailingSearch.UNITS_PER_TICK;
 		}
 		// Costs from the leg's own start, which a source can set out from at a cost
 		int base = costs[0];
@@ -309,10 +313,10 @@ public final class SailingSolver
 		return graph.packedPosition(node);
 	}
 
-	/** The cost of reaching {@code node}. */
+	/** The cost of reaching {@code node}, in ticks. */
 	public int cost(int node)
 	{
-		return graph.cost(node);
+		return graph.cost(node) / SailingSearch.UNITS_PER_TICK;
 	}
 
 	/**

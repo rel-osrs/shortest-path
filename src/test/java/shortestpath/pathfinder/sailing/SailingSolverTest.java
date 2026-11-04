@@ -16,6 +16,7 @@ public class SailingSolverTest
 	private static final int UNKAH_HARBOUR = WorldPointUtil.packWorldPoint(3143, 2847, 0);
 	private static final int TOP_OF_ELID_DELTA = WorldPointUtil.packWorldPoint(3273, 2738, 0);
 	private static final int PORT_SARIM_BAY = WorldPointUtil.packWorldPoint(3045, 3180, 0);
+	private static final int SEA_SOUTH_WEST_OF_PORT_SARIM = WorldPointUtil.packWorldPoint(2948, 3074, 0);
 
 	private static CollisionMap map()
 	{
@@ -78,6 +79,20 @@ public class SailingSolverTest
 		// A directed search (estimate) and an undirected one (cost alone) find legs of the same cost
 		assertEquals(solve(false, UNKAH_HARBOUR, TOP_OF_ELID_DELTA).cost(),
 			solve(true, UNKAH_HARBOUR, TOP_OF_ELID_DELTA).cost());
+	}
+
+	@Test
+	public void ofEquallyQuickLegsTheOneThatTurnsLessIsKept()
+	{
+		// Open water: many legs take the same ticks, and without the tie-break the one found turns 20 times
+		SailingLeg leg = solve(true, PORT_SARIM_BAY, SEA_SOUTH_WEST_OF_PORT_SARIM);
+		assertEquals(ticks(leg, SailingMoves.forSpeed(1.5)), leg.cost());
+		int turns = 0;
+		for (int i = 2; i < leg.size(); i++)
+		{
+			if (leg.heading(i) != leg.heading(i - 1)) turns++;
+		}
+		assertTrue(turns + " turns", turns <= 4);
 	}
 
 	@Test
