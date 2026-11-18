@@ -20,9 +20,9 @@ import shortestpath.transport.Transport;
 
 /**
  * Owns the plugin's external plugin-message surface: the dispatch of incoming
- * {@code path}/{@code query}/{@code clear}/{@code getTarget} messages and the
- * serialization of the outgoing {@code result}/{@code currentTarget}/
- * {@code transports} responses. Implements the scheduler's narrow
+ * {@code path}/{@code query}/{@code clear}/{@code getTarget}/{@code getPath} messages and
+ * the serialization of the outgoing {@code result}/{@code currentTarget}/
+ * {@code currentPath}/{@code transports} responses. Implements the scheduler's narrow
  * {@link QueryResponder} callback seam so query completions can be answered
  * without the scheduler knowing the wire contract.
  *
@@ -52,6 +52,8 @@ public class PluginMessageHandler implements QueryResponder
 	private static final String PLUGIN_MESSAGE_RESULT = "result";
 	private static final String PLUGIN_MESSAGE_GET_TARGET = "getTarget";
 	private static final String PLUGIN_MESSAGE_CURRENT_TARGET = "currentTarget";
+	private static final String PLUGIN_MESSAGE_GET_PATH = "getPath";
+	private static final String PLUGIN_MESSAGE_CURRENT_PATH = "currentPath";
 	private static final String PLUGIN_MESSAGE_ID = "id";
 	private static final String PLUGIN_MESSAGE_BANK_VISITED = "bankVisited";
 	private static final String PLUGIN_MESSAGE_TARGET_STATUS = "targetStatus";
@@ -74,6 +76,7 @@ public class PluginMessageHandler implements QueryResponder
 		PLUGIN_MESSAGE_PATH, this::onPathMessage,
 		PLUGIN_MESSAGE_QUERY, this::onQueryMessage,
 		PLUGIN_MESSAGE_GET_TARGET, this::onGetTargetMessage,
+		PLUGIN_MESSAGE_GET_PATH, this::onGetPathMessage,
 		PLUGIN_MESSAGE_CLEAR, this::onClearMessage);
 
 	public void onPluginMessage(PluginMessage event)
@@ -146,6 +149,31 @@ public class PluginMessageHandler implements QueryResponder
 	{
 		Map<String, Object> data = event.getData();
 		postCurrentTarget(data == null ? null : data.get(PLUGIN_MESSAGE_ID));
+	}
+
+	/**
+	 * Answers a {@code getPath} plugin message with a {@code currentPath} message carrying the
+	 * caller's {@code id} and the shown path's tiles in order. This is a read-only request: it
+	 * launches no pathfinding work and mutates no state.
+	 */
+	private void onGetPathMessage(PluginMessage event)
+	{
+		Map<String, Object> data = event.getData();
+		List<WorldPoint> path = scheduler.withSchedulerLock(() ->
+		{
+			ActiveSearch pathfinder = scheduler.getActiveSearch();
+			List<WorldPoint> points = new ArrayList<>();
+			for (PathStep step : (pathfinder == null || pathfinder.getPath() == null) ? List.<PathStep>of() : pathfinder.getPath())
+			{
+				points.add(WorldPointUtil.unpackWorldPoint(step.getPackedPosition()));
+			}
+			return points;
+		});
+		Map<String, Object> message = new HashMap<>();
+		message.put(PLUGIN_MESSAGE_ID, data == null ? null : data.get(PLUGIN_MESSAGE_ID));
+		message.put("set", !path.isEmpty());
+		message.put("path", path);
+		clientThread.invokeLater(() -> eventBus.post(new PluginMessage(Settings.CONFIG_GROUP, PLUGIN_MESSAGE_CURRENT_PATH, message)));
 	}
 
 	private void onClearMessage(PluginMessage event)

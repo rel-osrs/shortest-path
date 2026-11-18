@@ -244,6 +244,33 @@ public class PluginMessageHandlerTest
 	}
 
 	@Test
+	public void getPathPostsShownPath()
+	{
+		ActiveSearch search = mock(ActiveSearch.class);
+		when(search.getPath()).thenReturn(List.of(new PathStep(packed(1, 1), null), new PathStep(packed(2, 2), null)));
+		when(scheduler.getActiveSearch()).thenReturn(search);
+
+		handler.onPluginMessage(new PluginMessage(Settings.CONFIG_GROUP, "getPath", Map.of("id", "p1")));
+
+		PluginMessage posted = singlePost();
+		assertEquals("currentPath", posted.getName());
+		assertEquals("p1", posted.getData().get("id"));
+		assertEquals(true, posted.getData().get("set"));
+		assertEquals(List.of(new WorldPoint(1, 1, 0), new WorldPoint(2, 2, 0)), posted.getData().get("path"));
+	}
+
+	@Test
+	public void getPathWithoutPathPostsUnset()
+	{
+		handler.onPluginMessage(new PluginMessage(Settings.CONFIG_GROUP, "getPath", Map.of("id", "p2")));
+
+		PluginMessage posted = singlePost();
+		assertEquals("p2", posted.getData().get("id"));
+		assertEquals(false, posted.getData().get("set"));
+		assertTrue(((List<?>) posted.getData().get("path")).isEmpty());
+	}
+
+	@Test
 	public void postQueryResultSerializesResultShape()
 	{
 		PathStep first = new PathStep(packed(1, 1), null);
