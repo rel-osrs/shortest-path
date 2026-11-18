@@ -42,6 +42,8 @@ public class PluginMessageTestPlugin extends Plugin
 	private static final String PLUGIN_MESSAGE_RESULT = "result";
 	private static final String PLUGIN_MESSAGE_GET_TARGET = "getTarget";
 	private static final String PLUGIN_MESSAGE_CURRENT_TARGET = "currentTarget";
+	private static final String PLUGIN_MESSAGE_GET_PATH = "getPath";
+	private static final String PLUGIN_MESSAGE_CURRENT_PATH = "currentPath";
 	private static final String CLEAR = "Clear";
 	private static final String PATH = ColorUtil.wrapWithColorTag("Path (PluginMessage)", JagexColors.MENU_TARGET);
 	private static final String SET = "Set";
@@ -64,6 +66,8 @@ public class PluginMessageTestPlugin extends Plugin
 		JagexColors.MENU_TARGET);
 	private static final String GET_TARGET = "Get";
 	private static final String CURRENT_TARGET = ColorUtil.wrapWithColorTag("Current target (PluginMessage)",
+		JagexColors.MENU_TARGET);
+	private static final String CURRENT_PATH = ColorUtil.wrapWithColorTag("Current path (PluginMessage)",
 		JagexColors.MENU_TARGET);
 
 	private final Set<WorldPoint> targets = new HashSet<>(10);
@@ -111,6 +115,7 @@ public class PluginMessageTestPlugin extends Plugin
 					addMenuEntry(QUERY, QUERY_TARGET_REQ, 1);
 				}
 				addMenuEntry(GET_TARGET, CURRENT_TARGET, 1);
+				addMenuEntry(GET_TARGET, CURRENT_PATH, 1);
 				if (!targets.isEmpty())
 				{
 					addMenuEntry(SET, START_INT, 1);
@@ -138,6 +143,7 @@ public class PluginMessageTestPlugin extends Plugin
 				addMenuEntry(QUERY, QUERY_TARGET_REQ, 0);
 			}
 			addMenuEntry(GET_TARGET, CURRENT_TARGET, 0);
+			addMenuEntry(GET_TARGET, CURRENT_PATH, 0);
 			if (!targets.isEmpty())
 			{
 				addMenuEntry(SET, START_INT, 0);
@@ -211,6 +217,13 @@ public class PluginMessageTestPlugin extends Plugin
 		else if (entry.getOption().equals(GET_TARGET) && entry.getTarget().equals(CURRENT_TARGET))
 		{
 			sendGetTarget();
+			return;
+		}
+		else if (entry.getOption().equals(GET_TARGET) && entry.getTarget().equals(CURRENT_PATH))
+		{
+			Map<String, Object> data = new HashMap<>();
+			data.put("id", "test-get-path");
+			eventBus.post(new PluginMessage(PLUGIN_MESSAGE_NAME, PLUGIN_MESSAGE_GET_PATH, data));
 			return;
 		}
 		else if (entry.getOption().equals(CLEAR) && entry.getTarget().equals(PATH))
@@ -327,7 +340,7 @@ public class PluginMessageTestPlugin extends Plugin
 		eventBus.post(new PluginMessage(PLUGIN_MESSAGE_NAME, PLUGIN_MESSAGE_GET_TARGET, data));
 	}
 
-	/** Query and getTarget answers leave the displayed path alone, so they are only reported in chat. */
+	/** Query, getTarget and getPath answers leave the displayed path alone, so they are only reported in chat. */
 	@Subscribe
 	public void onPluginMessage(PluginMessage event)
 	{
@@ -354,6 +367,13 @@ public class PluginMessageTestPlugin extends Plugin
 					+ ", start=" + data.get("start")
 					+ ", target=" + data.get("target")
 					+ ", config=" + data.get("config"), null);
+		}
+		else if (PLUGIN_MESSAGE_CURRENT_PATH.equals(event.getName()))
+		{
+			List<?> path = (List<?>) data.get("path");
+			client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
+				"GetPath " + data.get("id") + ": set=" + data.get("set") + ", " + path.size() + " tiles"
+					+ (path.isEmpty() ? "" : ", first=" + path.get(0) + ", last=" + path.get(path.size() - 1)), null);
 		}
 	}
 

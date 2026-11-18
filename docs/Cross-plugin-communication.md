@@ -19,6 +19,8 @@ Plugin hub plugins can't share classes, so all data uses JDK and RuneLite types:
 | [`result`](#query-and-result) | from Shortest Path | The answer to a `query` |
 | [`getTarget`](#gettarget-and-currenttarget) | to Shortest Path | Ask what the shown path leads to |
 | [`currentTarget`](#gettarget-and-currenttarget) | from Shortest Path | The answer to a `getTarget` |
+| [`getPath`](#getpath-and-currentpath) | to Shortest Path | Ask for the tiles of the shown path |
+| [`currentPath`](#getpath-and-currentpath) | from Shortest Path | The answer to a `getPath` |
 | [`clear`](#clear) | to Shortest Path | Remove the shown path and setting overrides |
 | [`transports`](#transports) | from Shortest Path | The transports on the shown path, when enabled |
 
@@ -246,6 +248,20 @@ is a `currentTarget` message:
 | `start` | `WorldPoint` | Where it starts; only when `set`. |
 | `target` | `List` | Its targets: a `WorldPoint` for a target without requirements, otherwise a target map whose `requirements` is a `List` with one `Map<Integer, Integer>` of item id to quantity per group. Sending this list back as a `path` or `query` target gives the same targets. Only when `set`. |
 | `config` | `Map<String, Object>` | The active setting overrides, when there are any. |
+
+## `getPath` and `currentPath`
+
+`getPath` asks for the tiles of the shown path. It changes nothing and starts no search. The answer
+is a `currentPath` message:
+
+| `currentPath` key | Type | Meaning |
+| --- | --- | --- |
+| `id` | any | The `getPath` message's `id`. |
+| `set` | `Boolean` | Whether a path is shown. |
+| `path` | `List<WorldPoint>` | The shown path's tiles, in order; empty when not `set`. |
+
+The answer is a snapshot: ask again when you need a fresh one (for example when a teleport starts),
+not every frame.
 
 ## `clear`
 
